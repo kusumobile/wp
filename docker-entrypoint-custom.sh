@@ -174,6 +174,35 @@ insert_wp_config_line() {
 
 cd /var/www/html
 
+if [ -z "${WORDPRESS_DB_HOST:-}" ]; then
+    WORDPRESS_DB_HOST="${DATABASE_HOST:-${PGHOST:-}}"
+fi
+
+if [ -z "${WORDPRESS_DB_PORT:-}" ]; then
+    WORDPRESS_DB_PORT="${DATABASE_PORT:-${PGPORT:-}}"
+fi
+
+if [ -z "${WORDPRESS_DB_NAME:-}" ]; then
+    WORDPRESS_DB_NAME="${DATABASE_NAME:-${PGDATABASE:-}}"
+fi
+
+if [ -z "${WORDPRESS_DB_USER:-}" ]; then
+    WORDPRESS_DB_USER="${DATABASE_USERNAME:-${DATABASE_USER:-${PGUSER:-}}}"
+fi
+
+if [ -z "${WORDPRESS_DB_PASSWORD:-}" ]; then
+    WORDPRESS_DB_PASSWORD="${DATABASE_PASSWORD:-${PGPASSWORD:-}}"
+fi
+
+if [ -n "${WORDPRESS_DB_HOST:-}" ] && [ -n "${WORDPRESS_DB_PORT:-}" ]; then
+    case "$WORDPRESS_DB_HOST" in
+        *:*) ;;
+        *) WORDPRESS_DB_HOST="${WORDPRESS_DB_HOST}:${WORDPRESS_DB_PORT}" ;;
+    esac
+fi
+
+export WORDPRESS_DB_HOST WORDPRESS_DB_NAME WORDPRESS_DB_USER WORDPRESS_DB_PASSWORD
+
 if [ -n "${WORDPRESS_DB_PASSWORD_FILE:-}" ] && [ -f "${WORDPRESS_DB_PASSWORD_FILE}" ]; then
     export WORDPRESS_DB_PASSWORD="$(cat "${WORDPRESS_DB_PASSWORD_FILE}")"
 fi
@@ -185,7 +214,13 @@ if [ -z "${WORDPRESS_DB_PASSWORD:-}" ]; then
     fi
 fi
 
-if [ ! -f /var/www/html/wp-config.php ]; then
+db_ready=1
+if [ -z "${WORDPRESS_DB_HOST:-}" ] || [ -z "${WORDPRESS_DB_NAME:-}" ] || [ -z "${WORDPRESS_DB_USER:-}" ] || [ -z "${WORDPRESS_DB_PASSWORD:-}" ]; then
+    db_ready=0
+    echo "Database env vars are incomplete. Skipping WP-CLI install/bootstrap and starting Apache only." >&2
+fi
+
+if [ "$db_ready" -eq 1 ] && [ ! -f /var/www/html/wp-config.php ]; then
     wp config create \
         --allow-root \
         --path=/var/www/html \
@@ -196,15 +231,17 @@ if [ ! -f /var/www/html/wp-config.php ]; then
         --skip-check
 fi
 
-insert_wp_config_line /var/www/html/wp-config.php "define( 'DB_ENGINE', 'pgsql' );"
-insert_wp_config_line /var/www/html/wp-config.php "require_once ABSPATH . 'wp-content/wp-config-secrets.php';"
+if [ -f /var/www/html/wp-config.php ]; then
+    insert_wp_config_line /var/www/html/wp-config.php "define( 'DB_ENGINE', 'pgsql' );"
+    insert_wp_config_line /var/www/html/wp-config.php "require_once ABSPATH . 'wp-content/wp-config-secrets.php';"
+fi
 
 core_installed=0
-if wp core is-installed --allow-root --path=/var/www/html >/dev/null 2>&1; then
+if [ "$db_ready" -eq 1 ] && wp core is-installed --allow-root --path=/var/www/html >/dev/null 2>&1; then
     core_installed=1
 fi
 
-if [ "$core_installed" -eq 0 ]; then
+if [ "$db_ready" -eq 1 ] && [ "$core_installed" -eq 0 ]; then
     admin_password="$(secret_value WORDPRESS_ADMIN_PASSWORD)"
 
     if [ -z "$admin_password" ]; then
@@ -224,21 +261,25 @@ if [ "$core_installed" -eq 0 ]; then
         echo "WORDPRESS_ADMIN_PASSWORD not set; defaulting first-install admin password to 'admin'." >&2
     fi
 
-    wp core install \
+    if ! wp core install \
         --allow-root \
         --path=/var/www/html \
         --url="${WORDPRESS_URL:-http://localhost:8080}" \
         --title="${WORDPRESS_SITE_TITLE:-WordPress}" \
         --admin_user="${WORDPRESS_ADMIN_USER:-admin}" \
         --admin_password="$admin_password" \
-        --admin_email="${WORDPRESS_ADMIN_EMAIL:-admin@example.com}"
+        --admin_email="${WORDPRESS_ADMIN_EMAIL:-admin@example.com}"; then
+        echo "wp core install failed; continuing to start Apache." >&2
+    fi
 fi
 
-wp plugin is-active wp-pgsql-database --allow-root --path=/var/www/html >/dev/null 2>&1 || \
-    wp plugin activate wp-pgsql-database --allow-root --path=/var/www/html
+if [ "$db_ready" -eq 1 ]; then
+    wp plugin is-active wp-pgsql-database --allow-root --path=/var/www/html >/dev/null 2>&1 || \
+        wp plugin activate wp-pgsql-database --allow-root --path=/var/www/html || true
 
-wp plugin is-active s3-uploads --allow-root --path=/var/www/html >/dev/null 2>&1 || \
-    wp plugin activate s3-uploads --allow-root --path=/var/www/html
+    wp plugin is-active s3-uploads --allow-root --path=/var/www/html >/dev/null 2>&1 || \
+        wp plugin activate s3-uploads --allow-root --path=/var/www/html || true
+fi
 
 if [ "$#" -eq 0 ]; then
     set -- apache2-foreground
