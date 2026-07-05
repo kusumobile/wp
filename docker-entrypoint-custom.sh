@@ -57,18 +57,6 @@ first_non_empty_env() {
     printf '%s' ""
 }
 
-first_non_empty_env() {
-    for var_name in "$@"; do
-        eval var_value="\${${var_name}:-}"
-        if [ -n "$var_value" ]; then
-            printf '%s' "$var_value"
-            return 0
-        fi
-    done
-
-    printf '%s' ""
-}
-
 escape_sed_replacement() {
     printf '%s' "$1" | sed -e 's/[\/&\\]/\\&/g'
 }
@@ -194,6 +182,18 @@ value_or_file() {
         cat "$secret_file_path"
         return 0
     fi
+
+    printf '%s' ""
+}
+
+first_non_empty_env() {
+    for var_name in "$@"; do
+        eval var_value="\${${var_name}:-}"
+        if [ -n "$var_value" ]; then
+            printf '%s' "$var_value"
+            return 0
+        fi
+    done
 
     printf '%s' ""
 }
