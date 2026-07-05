@@ -175,40 +175,41 @@ insert_wp_config_line() {
 cd /var/www/html
 
 if [ -z "${WORDPRESS_DB_HOST:-}" ]; then
-    WORDPRESS_DB_HOST="${DATABASE_HOST:-${PGHOST:-}}"
+    WORDPRESS_DB_HOST="${DATABASE_HOST:-${DB_HOST:-${PGHOST:-}}}"
 fi
 
 if [ -z "${WORDPRESS_DB_PORT:-}" ]; then
-    WORDPRESS_DB_PORT="${DATABASE_PORT:-${PGPORT:-}}"
+    WORDPRESS_DB_PORT="${DATABASE_PORT:-${DB_PORT:-${PGPORT:-}}}"
 fi
 
 if [ -z "${WORDPRESS_DB_NAME:-}" ]; then
-    WORDPRESS_DB_NAME="${DATABASE_NAME:-${PGDATABASE:-}}"
+    WORDPRESS_DB_NAME="${DATABASE_NAME:-${DB_NAME:-${PGDATABASE:-}}}"
 fi
 
 if [ -z "${WORDPRESS_DB_USER:-}" ]; then
-    WORDPRESS_DB_USER="${DATABASE_USERNAME:-${DATABASE_USER:-${PGUSER:-}}}"
+    WORDPRESS_DB_USER="${DATABASE_USERNAME:-${DATABASE_USER:-${DB_USER:-${DB_USERNAME:-${PGUSER:-}}}}}"
 fi
 
 if [ -z "${WORDPRESS_DB_PASSWORD:-}" ]; then
-    WORDPRESS_DB_PASSWORD="${DATABASE_PASSWORD:-${PGPASSWORD:-}}"
+    WORDPRESS_DB_PASSWORD="${DATABASE_PASSWORD:-${DB_PASSWORD:-${PGPASSWORD:-}}}"
 fi
 
-if [ -n "${DATABASE_URL:-}" ]; then
+db_url="${DATABASE_URL:-${DB_URL:-${POSTGRES_URL:-${POSTGRESQL_URL:-${PG_URL:-}}}}}"
+if [ -n "$db_url" ]; then
     if [ -z "${WORDPRESS_DB_HOST:-}" ]; then
-        WORDPRESS_DB_HOST="$(php -r '$u=parse_url(getenv("DATABASE_URL")); echo isset($u["host"])?$u["host"]:"";')"
+        WORDPRESS_DB_HOST="$(DB_URL_VALUE="$db_url" php -r '$u=parse_url(getenv("DB_URL_VALUE")); echo isset($u["host"])?$u["host"]:"";')"
     fi
     if [ -z "${WORDPRESS_DB_PORT:-}" ]; then
-        WORDPRESS_DB_PORT="$(php -r '$u=parse_url(getenv("DATABASE_URL")); echo isset($u["port"])?$u["port"]:"";')"
+        WORDPRESS_DB_PORT="$(DB_URL_VALUE="$db_url" php -r '$u=parse_url(getenv("DB_URL_VALUE")); echo isset($u["port"])?$u["port"]:"";')"
     fi
     if [ -z "${WORDPRESS_DB_NAME:-}" ]; then
-        WORDPRESS_DB_NAME="$(php -r '$u=parse_url(getenv("DATABASE_URL")); echo isset($u["path"])?ltrim($u["path"],"/"):"";')"
+        WORDPRESS_DB_NAME="$(DB_URL_VALUE="$db_url" php -r '$u=parse_url(getenv("DB_URL_VALUE")); echo isset($u["path"])?ltrim($u["path"],"/"):"";')"
     fi
     if [ -z "${WORDPRESS_DB_USER:-}" ]; then
-        WORDPRESS_DB_USER="$(php -r '$u=parse_url(getenv("DATABASE_URL")); echo isset($u["user"])?rawurldecode($u["user"]):"";')"
+        WORDPRESS_DB_USER="$(DB_URL_VALUE="$db_url" php -r '$u=parse_url(getenv("DB_URL_VALUE")); echo isset($u["user"])?rawurldecode($u["user"]):"";')"
     fi
     if [ -z "${WORDPRESS_DB_PASSWORD:-}" ]; then
-        WORDPRESS_DB_PASSWORD="$(php -r '$u=parse_url(getenv("DATABASE_URL")); echo isset($u["pass"])?rawurldecode($u["pass"]):"";')"
+        WORDPRESS_DB_PASSWORD="$(DB_URL_VALUE="$db_url" php -r '$u=parse_url(getenv("DB_URL_VALUE")); echo isset($u["pass"])?rawurldecode($u["pass"]):"";')"
     fi
 fi
 
@@ -312,10 +313,8 @@ if [ -n "$listen_port" ] && [ "$listen_port" != "80" ]; then
     fi
 fi
 
-if [ -n "${SERVER_NAME:-}" ]; then
-    if ! grep -q '^ServerName ' /etc/apache2/apache2.conf; then
-        printf '\nServerName %s\n' "$SERVER_NAME" >> /etc/apache2/apache2.conf
-    fi
+if ! grep -q '^ServerName ' /etc/apache2/apache2.conf; then
+    printf '\nServerName %s\n' "${SERVER_NAME:-localhost}" >> /etc/apache2/apache2.conf
 fi
 
 exec "$@"
