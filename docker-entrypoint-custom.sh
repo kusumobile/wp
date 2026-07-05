@@ -194,6 +194,24 @@ if [ -z "${WORDPRESS_DB_PASSWORD:-}" ]; then
     WORDPRESS_DB_PASSWORD="${DATABASE_PASSWORD:-${PGPASSWORD:-}}"
 fi
 
+if [ -n "${DATABASE_URL:-}" ]; then
+    if [ -z "${WORDPRESS_DB_HOST:-}" ]; then
+        WORDPRESS_DB_HOST="$(php -r '$u=parse_url(getenv("DATABASE_URL")); echo isset($u["host"])?$u["host"]:"";')"
+    fi
+    if [ -z "${WORDPRESS_DB_PORT:-}" ]; then
+        WORDPRESS_DB_PORT="$(php -r '$u=parse_url(getenv("DATABASE_URL")); echo isset($u["port"])?$u["port"]:"";')"
+    fi
+    if [ -z "${WORDPRESS_DB_NAME:-}" ]; then
+        WORDPRESS_DB_NAME="$(php -r '$u=parse_url(getenv("DATABASE_URL")); echo isset($u["path"])?ltrim($u["path"],"/"):"";')"
+    fi
+    if [ -z "${WORDPRESS_DB_USER:-}" ]; then
+        WORDPRESS_DB_USER="$(php -r '$u=parse_url(getenv("DATABASE_URL")); echo isset($u["user"])?rawurldecode($u["user"]):"";')"
+    fi
+    if [ -z "${WORDPRESS_DB_PASSWORD:-}" ]; then
+        WORDPRESS_DB_PASSWORD="$(php -r '$u=parse_url(getenv("DATABASE_URL")); echo isset($u["pass"])?rawurldecode($u["pass"]):"";')"
+    fi
+fi
+
 if [ -n "${WORDPRESS_DB_HOST:-}" ] && [ -n "${WORDPRESS_DB_PORT:-}" ]; then
     case "$WORDPRESS_DB_HOST" in
         *:*) ;;
@@ -283,6 +301,21 @@ fi
 
 if [ "$#" -eq 0 ]; then
     set -- apache2-foreground
+fi
+
+listen_port="${PORT:-80}"
+if [ -n "$listen_port" ] && [ "$listen_port" != "80" ]; then
+    sed -ri "s/^Listen 80$/Listen ${listen_port}/" /etc/apache2/ports.conf
+    sed -ri "s/:80>/:${listen_port}>/g" /etc/apache2/sites-available/000-default.conf
+    if [ -f /etc/apache2/sites-available/default-ssl.conf ]; then
+        sed -ri "s/:443>/:${listen_port}>/g" /etc/apache2/sites-available/default-ssl.conf
+    fi
+fi
+
+if [ -n "${SERVER_NAME:-}" ]; then
+    if ! grep -q '^ServerName ' /etc/apache2/apache2.conf; then
+        printf '\nServerName %s\n' "$SERVER_NAME" >> /etc/apache2/apache2.conf
+    fi
 fi
 
 exec "$@"
