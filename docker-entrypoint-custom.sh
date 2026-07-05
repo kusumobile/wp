@@ -189,16 +189,19 @@ value_or_file() {
     printf '%s' ""
 }
 
-first_non_empty_env() {
+set_from_first_non_empty_env() {
+    target_var="$1"
+    shift
+
     for var_name in "$@"; do
         eval var_value="\${${var_name}:-}"
         if [ -n "$var_value" ]; then
-            printf '%s' "$var_value"
+            eval "$target_var=\$var_value"
             return 0
         fi
     done
 
-    printf '%s' ""
+    return 1
 }
 
 escape_sed_replacement() {
