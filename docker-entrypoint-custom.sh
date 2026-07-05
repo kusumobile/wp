@@ -45,6 +45,18 @@ value_or_file() {
     printf '%s' ""
 }
 
+first_non_empty_env() {
+    for var_name in "$@"; do
+        eval var_value="\${${var_name}:-}"
+        if [ -n "$var_value" ]; then
+            printf '%s' "$var_value"
+            return 0
+        fi
+    done
+
+    printf '%s' ""
+}
+
 escape_sed_replacement() {
     printf '%s' "$1" | sed -e 's/[\/&\\]/\\&/g'
 }
@@ -190,26 +202,26 @@ insert_wp_config_line() {
 cd /var/www/html
 
 if [ -z "${WORDPRESS_DB_HOST:-}" ]; then
-    WORDPRESS_DB_HOST="${DATABASE_HOST:-${DB_HOST:-${PGHOST:-}}}"
+    WORDPRESS_DB_HOST="$(first_non_empty_env DATABASE_HOST DB_HOST POSTGRES_HOST PGHOST)"
 fi
 
 if [ -z "${WORDPRESS_DB_PORT:-}" ]; then
-    WORDPRESS_DB_PORT="${DATABASE_PORT:-${DB_PORT:-${PGPORT:-}}}"
+    WORDPRESS_DB_PORT="$(first_non_empty_env DATABASE_PORT DB_PORT POSTGRES_PORT PGPORT)"
 fi
 
 if [ -z "${WORDPRESS_DB_NAME:-}" ]; then
-    WORDPRESS_DB_NAME="${DATABASE_NAME:-${DB_NAME:-${PGDATABASE:-}}}"
+    WORDPRESS_DB_NAME="$(first_non_empty_env DATABASE_NAME DB_NAME POSTGRES_DB POSTGRES_DATABASE PGDATABASE)"
 fi
 
 if [ -z "${WORDPRESS_DB_USER:-}" ]; then
-    WORDPRESS_DB_USER="${DATABASE_USERNAME:-${DATABASE_USER:-${DB_USER:-${DB_USERNAME:-${PGUSER:-}}}}}"
+    WORDPRESS_DB_USER="$(first_non_empty_env DATABASE_USERNAME DATABASE_USER DB_USERNAME DB_USER POSTGRES_USER PGUSER)"
 fi
 
 if [ -z "${WORDPRESS_DB_PASSWORD:-}" ]; then
-    WORDPRESS_DB_PASSWORD="${DATABASE_PASSWORD:-${DB_PASSWORD:-${PGPASSWORD:-}}}"
+    WORDPRESS_DB_PASSWORD="$(first_non_empty_env DATABASE_PASSWORD DB_PASSWORD POSTGRES_PASSWORD PGPASSWORD)"
 fi
 
-db_url="${DATABASE_URL:-${DB_URL:-${POSTGRES_URL:-${POSTGRESQL_URL:-${PG_URL:-}}}}}"
+db_url="$(first_non_empty_env DATABASE_URL DB_URL POSTGRES_URL POSTGRESQL_URL PG_URL DATABASE_CONNECTION_STRING)"
 if [ -n "$db_url" ]; then
     if [ -z "${WORDPRESS_DB_HOST:-}" ]; then
         WORDPRESS_DB_HOST="$(DB_URL_VALUE="$db_url" php -r '$u=parse_url(getenv("DB_URL_VALUE")); echo isset($u["host"])?$u["host"]:"";')"
@@ -237,12 +249,28 @@ fi
 
 export WORDPRESS_DB_HOST WORDPRESS_DB_NAME WORDPRESS_DB_USER WORDPRESS_DB_PASSWORD
 
-if [ -n "${WORDPRESS_DB_PASSWORD_FILE:-}" ] && [ -f "${WORDPRESS_DB_PASSWORD_FILE}" ]; then
-    export WORDPRESS_DB_PASSWORD="$(cat "${WORDPRESS_DB_PASSWORD_FILE}")"
-fi
+for password_file_var in WORDPRESS_DB_PASSWORD_FILE DATABASE_PASSWORD_FILE DB_PASSWORD_FILE POSTGRES_PASSWORD_FILE PGPASSWORD_FILE; do
+    eval password_file_path="\${${password_file_var}:-}"
+    if [ -n "$password_file_path" ] && [ -f "$password_file_path" ]; then
+        export WORDPRESS_DB_PASSWORD="$(cat "$password_file_path")"
+        break
+    fi
+done
 
 if [ -z "${WORDPRESS_DB_PASSWORD:-}" ]; then
     WORDPRESS_DB_PASSWORD="$(value_or_file WORDPRESS_DB_PASSWORD)"
+    if [ -z "$WORDPRESS_DB_PASSWORD" ]; then
+        WORDPRESS_DB_PASSWORD="$(value_or_file DATABASE_PASSWORD)"
+    fi
+    if [ -z "$WORDPRESS_DB_PASSWORD" ]; then
+        WORDPRESS_DB_PASSWORD="$(value_or_file DB_PASSWORD)"
+    fi
+    if [ -z "$WORDPRESS_DB_PASSWORD" ]; then
+        WORDPRESS_DB_PASSWORD="$(value_or_file POSTGRES_PASSWORD)"
+    fi
+    if [ -z "$WORDPRESS_DB_PASSWORD" ]; then
+        WORDPRESS_DB_PASSWORD="$(value_or_file PGPASSWORD)"
+    fi
     if [ -n "$WORDPRESS_DB_PASSWORD" ]; then
         export WORDPRESS_DB_PASSWORD
     fi
