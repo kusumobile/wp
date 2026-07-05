@@ -1,54 +1,45 @@
 services:
+  db:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-wordpress}
+      POSTGRES_USER: ${POSTGRES_USER:-wordpress}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-wordpress}
+    volumes:
+      - db-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-wordpress} -d ${POSTGRES_DB:-wordpress}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
   wordpress:
     build:
       context: .
+    depends_on:
+      db:
+        condition: service_healthy
     restart: unless-stopped
-    secrets:
-      - db_password
-      - admin_password
-      - s3_key
-      - s3_secret
     ports:
       - "8080:80"
     environment:
-      WORDPRESS_DB_HOST: ${WORDPRESS_DB_HOST}
-      WORDPRESS_DB_NAME: ${WORDPRESS_DB_NAME}
-      WORDPRESS_DB_USER: ${WORDPRESS_DB_USER}
-      PGSSLMODE: ${PGSSLMODE:-require}
-      WORDPRESS_DB_PASSWORD_FILE: /run/secrets/db_password
-      WORDPRESS_URL: ${WORDPRESS_URL}
-      WORDPRESS_SITE_TITLE: ${WORDPRESS_SITE_TITLE:-WordPress on DigitalOcean}
-      WORDPRESS_ADMIN_USER: ${WORDPRESS_ADMIN_USER}
-      WORDPRESS_ADMIN_PASSWORD_FILE: /run/secrets/admin_password
-      WORDPRESS_ADMIN_EMAIL: ${WORDPRESS_ADMIN_EMAIL}
-      S3_UPLOADS_BUCKET: ${S3_UPLOADS_BUCKET}
-      S3_UPLOADS_REGION: ${S3_UPLOADS_REGION}
-      S3_UPLOADS_BUCKET_URL: ${S3_UPLOADS_BUCKET_URL}
-      S3_UPLOADS_OBJECT_ACL: ${S3_UPLOADS_OBJECT_ACL:-public-read}
-      S3_UPLOADS_KEY_FILE: /run/secrets/s3_key
-      S3_UPLOADS_SECRET_FILE: /run/secrets/s3_secret
+      WORDPRESS_DB_HOST: db:5432
+      WORDPRESS_DB_NAME: ${POSTGRES_DB:-wordpress}
+      WORDPRESS_DB_USER: ${POSTGRES_USER:-wordpress}
+      WORDPRESS_DB_PASSWORD: ${POSTGRES_PASSWORD:-wordpress}
+      PGSSLMODE: disable
+      WORDPRESS_URL: ${WORDPRESS_URL:-http://localhost:8080}
+      WORDPRESS_SITE_TITLE: ${WORDPRESS_SITE_TITLE:-WordPress Local}
+      WORDPRESS_ADMIN_USER: ${WORDPRESS_ADMIN_USER:-admin}
+      WORDPRESS_ADMIN_PASSWORD: ${WORDPRESS_ADMIN_PASSWORD:-admin}
+      WORDPRESS_ADMIN_EMAIL: ${WORDPRESS_ADMIN_EMAIL:-admin@example.com}
       WORDPRESS_CONFIG_EXTRA: |
         define( 'DB_ENGINE', 'pgsql' );
-        define( 'S3_UPLOADS_BUCKET', '${S3_UPLOADS_BUCKET}' );
-        define( 'S3_UPLOADS_REGION', '${S3_UPLOADS_REGION}' );
-        define( 'S3_UPLOADS_BUCKET_URL', '${S3_UPLOADS_BUCKET_URL}' );
-        define( 'S3_UPLOADS_OBJECT_ACL', '${S3_UPLOADS_OBJECT_ACL:-public-read}' );
         require_once ABSPATH . 'wp-content/wp-config-secrets.php';
-      S3_UPLOADS_ENDPOINT: ${S3_UPLOADS_ENDPOINT:-https://nyc3.digitaloceanspaces.com}
-      S3_UPLOADS_PATH_STYLE: ${S3_UPLOADS_PATH_STYLE:-true}
-      S3_UPLOADS_CHECKSUM_MODE: ${S3_UPLOADS_CHECKSUM_MODE:-when_required}
     volumes:
       - wordpress-content:/var/www/html/wp-content
 
-secrets:
-  db_password:
-    file: ./secrets/db_password.txt
-  admin_password:
-    file: ./secrets/admin_password.txt
-  s3_key:
-    file: ./secrets/s3_key.txt
-  s3_secret:
-    file: ./secrets/s3_secret.txt
-
 volumes:
+  db-data:
   wordpress-content:
