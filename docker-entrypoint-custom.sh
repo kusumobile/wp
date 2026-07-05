@@ -1,0 +1,133 @@
+#!/bin/sh
+set -eu
+
+mkdir -p /var/www/html/wp-content/mu-plugins
+
+php_quote() {
+    php -r 'echo var_export($argv[1], true);' "$1"
+}
+
+secret_value() {
+    secret_name="$1"
+    secret_file_name="${secret_name}_FILE"
+
+    eval secret_file_path="\${${secret_file_name}:-}"
+
+    if [ -n "$secret_file_path" ] && [ -f "$secret_file_path" ]; then
+        cat "$secret_file_path"
+        return 0
+    fi
+
+    eval secret_value_raw="\${${secret_name}:-}"
+    printf '%s' "$secret_value_raw"
+}
+
+cat > /var/www/html/wp-content/db.php <<'PHP'
+<?php
+require_once __DIR__ . '/plugins/wp-pgsql-database/wp-pgsql-database.php';
+PHP
+
+cat > /var/www/html/wp-content/mu-plugins/s3-uploads.php <<'PHP'
+<?php
+require_once __DIR__ . '/../plugins/s3-uploads/s3-uploads.php';
+PHP
+
+cat > /var/www/html/wp-content/mu-plugins/s3-uploads-endpoint.php <<'PHP'
+<?php
+add_filter( 's3_uploads_s3_client_params', function ( $params ) {
+    $endpoint = getenv( 'S3_UPLOADS_ENDPOINT' );
+
+    if ( ! $endpoint ) {
+        return $params;
+    }
+
+    $params['endpoint'] = rtrim( $endpoint, '/' );
+    $params['use_path_style_endpoint'] = filter_var( getenv( 'S3_UPLOADS_PATH_STYLE' ) ?: 'true', FILTER_VALIDATE_BOOLEAN );
+
+    $checksum_mode = getenv( 'S3_UPLOADS_CHECKSUM_MODE' );
+
+    if ( $checksum_mode ) {
+        $params['request_checksum_calculation'] = $checksum_mode;
+        $params['response_checksum_validation'] = $checksum_mode;
+    }
+
+    return $params;
+} );
+PHP
+
+wp_config_secrets="/var/www/html/wp-content/wp-config-secrets.php"
+cat > "$wp_config_secrets" <<'PHP'
+<?php
+PHP
+
+append_php_define() {
+    define_name="$1"
+    define_value="$2"
+
+    if [ -n "$define_value" ]; then
+        printf "define( '%s', %s );\n" "$define_name" "$(php_quote "$define_value")" >> "$wp_config_secrets"
+    fi
+}
+
+append_php_define "S3_UPLOADS_BUCKET" "$(secret_value S3_UPLOADS_BUCKET)"
+append_php_define "S3_UPLOADS_REGION" "$(secret_value S3_UPLOADS_REGION)"
+append_php_define "S3_UPLOADS_KEY" "$(secret_value S3_UPLOADS_KEY)"
+append_php_define "S3_UPLOADS_SECRET" "$(secret_value S3_UPLOADS_SECRET)"
+append_php_define "S3_UPLOADS_BUCKET_URL" "$(secret_value S3_UPLOADS_BUCKET_URL)" 
+append_php_define "S3_UPLOADS_OBJECT_ACL" "$(secret_value S3_UPLOADS_OBJECT_ACL)" 
+
+cat > /usr/local/bin/wordpress-bootstrap.sh <<'SH'
+#!/bin/sh
+set -eu
+
+secret_value() {
+    secret_value_name="$1"
+    secret_file_name="${secret_value_name}_FILE"
+
+    eval secret_file_path="\${${secret_file_name}:-}"
+
+    if [ -n "$secret_file_path" ] && [ -f "$secret_file_path" ]; then
+        cat "$secret_file_path"
+        return 0
+    fi
+
+    eval secret_value="\${${secret_value_name}:-}"
+    printf '%s' "$secret_value"
+}
+
+cd /var/www/html
+
+if [ -n "${WORDPRESS_DB_PASSWORD_FILE:-}" ] && [ -f "${WORDPRESS_DB_PASSWORD_FILE}" ]; then
+    export WORDPRESS_DB_PASSWORD="$(cat "${WORDPRESS_DB_PASSWORD_FILE}")"
+fi
+
+admin_password="$(secret_value WORDPRESS_ADMIN_PASSWORD)"
+
+if [ -z "$admin_password" ]; then
+    echo "WORDPRESS_ADMIN_PASSWORD or WORDPRESS_ADMIN_PASSWORD_FILE must be set" >&2
+    exit 1
+fi
+
+if ! wp core is-installed --allow-root --path=/var/www/html >/dev/null 2>&1; then
+    wp core install \
+        --allow-root \
+        --path=/var/www/html \
+        --url="${WORDPRESS_URL:-http://localhost:8080}" \
+        --title="${WORDPRESS_SITE_TITLE:-WordPress}" \
+        --admin_user="${WORDPRESS_ADMIN_USER:-admin}" \
+        --admin_password="$admin_password" \
+        --admin_email="${WORDPRESS_ADMIN_EMAIL:-admin@example.com}"
+fi
+
+wp plugin is-active wp-pgsql-database --allow-root --path=/var/www/html >/dev/null 2>&1 || \
+    wp plugin activate wp-pgsql-database --allow-root --path=/var/www/html
+
+wp plugin is-active s3-uploads --allow-root --path=/var/www/html >/dev/null 2>&1 || \
+    wp plugin activate s3-uploads --allow-root --path=/var/www/html
+
+exec "$@"
+SH
+
+chmod +x /usr/local/bin/wordpress-bootstrap.sh
+
+exec docker-entrypoint.sh sh /usr/local/bin/wordpress-bootstrap.sh "$@"
