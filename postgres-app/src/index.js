@@ -21,6 +21,13 @@ app.get("/health", async (_req, res) => {
   }
 });
 
+app.get("/", (_req, res) => {
+  res.json({
+    message: "Postgres app is running",
+    endpoints: ["/health", "/users"],
+  });
+});
+
 app.get("/users", async (_req, res) => {
   try {
     const result = await pool.query(
