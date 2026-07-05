@@ -146,18 +146,31 @@ if [ -z "${WORDPRESS_DB_PASSWORD:-}" ]; then
     fi
 fi
 
-admin_password="$(secret_value WORDPRESS_ADMIN_PASSWORD)"
-
-if [ -z "$admin_password" ]; then
-    admin_password="$(value_or_file WORDPRESS_ADMIN_PASSWORD)"
+core_installed=0
+if wp core is-installed --allow-root --path=/var/www/html >/dev/null 2>&1; then
+    core_installed=1
 fi
 
-if [ -z "$admin_password" ]; then
-    echo "WORDPRESS_ADMIN_PASSWORD or WORDPRESS_ADMIN_PASSWORD_FILE must be set" >&2
-    exit 1
-fi
+if [ "$core_installed" -eq 0 ]; then
+    admin_password="$(secret_value WORDPRESS_ADMIN_PASSWORD)"
 
-if ! wp core is-installed --allow-root --path=/var/www/html >/dev/null 2>&1; then
+    if [ -z "$admin_password" ]; then
+        admin_password="$(value_or_file WORDPRESS_ADMIN_PASSWORD)"
+    fi
+
+    if [ -z "$admin_password" ]; then
+        admin_password="$(value_or_file WP_ADMIN_PASSWORD)"
+    fi
+
+    if [ -z "$admin_password" ]; then
+        admin_password="$(value_or_file ADMIN_PASSWORD)"
+    fi
+
+    if [ -z "$admin_password" ]; then
+        echo "Missing admin password for first install. Set WORDPRESS_ADMIN_PASSWORD (or WP_ADMIN_PASSWORD / ADMIN_PASSWORD)." >&2
+        exit 1
+    fi
+
     wp core install \
         --allow-root \
         --path=/var/www/html \
