@@ -58,11 +58,7 @@ insert_wp_config_line() {
     fi
 }
 
-wp_pgsql_dropin="/var/www/html/wp-content/plugins/wp-pgsql-database/db.copy"
-if [ -f "$wp_pgsql_dropin" ]; then
-    cp "$wp_pgsql_dropin" /var/www/html/wp-content/db.php
-else
-    cat > /var/www/html/wp-content/db.php <<'PHP'
+cat > /var/www/html/wp-content/db.php <<'PHP'
 <?php
 if ( defined( 'DB_ENGINE' ) && 'pgsql' === DB_ENGINE ) {
     require_once __DIR__ . '/plugins/wp-pgsql-database/includes/driver/class-wp-pgsql-driver-interface.php';
@@ -75,7 +71,6 @@ if ( defined( 'DB_ENGINE' ) && 'pgsql' === DB_ENGINE ) {
     $GLOBALS['wpdb'] = $wpdb;
 }
 PHP
-fi
 
 cat > /var/www/html/wp-content/mu-plugins/s3-uploads.php <<'PHP'
 <?php
