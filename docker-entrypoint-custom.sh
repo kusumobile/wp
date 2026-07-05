@@ -58,10 +58,24 @@ insert_wp_config_line() {
     fi
 }
 
-cat > /var/www/html/wp-content/db.php <<'PHP'
+wp_pgsql_dropin="/var/www/html/wp-content/plugins/wp-pgsql-database/db.copy"
+if [ -f "$wp_pgsql_dropin" ]; then
+    cp "$wp_pgsql_dropin" /var/www/html/wp-content/db.php
+else
+    cat > /var/www/html/wp-content/db.php <<'PHP'
 <?php
-require_once __DIR__ . '/plugins/wp-pgsql-database/wp-pgsql-database.php';
+if ( defined( 'DB_ENGINE' ) && 'pgsql' === DB_ENGINE ) {
+    require_once __DIR__ . '/plugins/wp-pgsql-database/includes/driver/class-wp-pgsql-driver-interface.php';
+    require_once __DIR__ . '/plugins/wp-pgsql-database/includes/driver/class-wp-pgsql-driver.php';
+    require_once __DIR__ . '/plugins/wp-pgsql-database/includes/translator/class-wp-pgsql-lexer.php';
+    require_once __DIR__ . '/plugins/wp-pgsql-database/includes/translator/class-wp-pgsql-token.php';
+    require_once __DIR__ . '/plugins/wp-pgsql-database/includes/translator/class-wp-pgsql-translator.php';
+    require_once __DIR__ . '/plugins/wp-pgsql-database/includes/database/class-wp-pgsql-db.php';
+    $wpdb = new \WP_PgSQL_Database\Database\WP_PgSQL_Db( DB_USER, DB_PASSWORD, DB_NAME, DB_HOST );
+    $GLOBALS['wpdb'] = $wpdb;
+}
 PHP
+fi
 
 cat > /var/www/html/wp-content/mu-plugins/s3-uploads.php <<'PHP'
 <?php
