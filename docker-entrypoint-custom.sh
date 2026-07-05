@@ -77,6 +77,10 @@ cat > /var/www/html/wp-content/db.php <<'PHP'
 <?php
 // Always initialize the PostgreSQL drop-in so manual setup-config.php
 // generated wp-config.php files still use PostgreSQL without extra constants.
+if ( ! defined( 'DB_HOST' ) || ! defined( 'DB_USER' ) || ! defined( 'DB_PASSWORD' ) || ! defined( 'DB_NAME' ) ) {
+    return;
+}
+
 $db_host = DB_HOST;
 $sslmode = getenv( 'PGSSLMODE' );
 if ( false === $sslmode || '' === $sslmode ) {
@@ -365,6 +369,12 @@ fi
 if [ "$#" -eq 0 ]; then
     set -- apache2-foreground
 fi
+
+# Honor App Platform forwarded HTTPS headers so WordPress generates https URLs.
+cat > /etc/apache2/conf-available/app-platform-https.conf <<'APACHECONF'
+SetEnvIf X-Forwarded-Proto "https" HTTPS=on
+APACHECONF
+a2enconf app-platform-https >/dev/null 2>&1 || true
 
 listen_port="${PORT:-80}"
 if [ -n "$listen_port" ] && [ "$listen_port" != "80" ]; then
