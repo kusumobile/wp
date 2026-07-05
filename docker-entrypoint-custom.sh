@@ -114,6 +114,25 @@ secret_value() {
     printf '%s' "$secret_value"
 }
 
+value_or_file() {
+    secret_value_name="$1"
+    secret_file_name="${secret_value_name}_FILE"
+
+    eval secret_value="\${${secret_value_name}:-}"
+    if [ -n "$secret_value" ]; then
+        printf '%s' "$secret_value"
+        return 0
+    fi
+
+    eval secret_file_path="\${${secret_file_name}:-}"
+    if [ -n "$secret_file_path" ] && [ -f "$secret_file_path" ]; then
+        cat "$secret_file_path"
+        return 0
+    fi
+
+    printf '%s' ""
+}
+
 cd /var/www/html
 
 if [ -n "${WORDPRESS_DB_PASSWORD_FILE:-}" ] && [ -f "${WORDPRESS_DB_PASSWORD_FILE}" ]; then
