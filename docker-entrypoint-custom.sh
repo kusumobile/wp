@@ -45,6 +45,19 @@ value_or_file() {
     printf '%s' ""
 }
 
+escape_sed_replacement() {
+    printf '%s' "$1" | sed -e 's/[\/&\\]/\\&/g'
+}
+
+insert_wp_config_line() {
+    config_file="$1"
+    config_line="$2"
+
+    if ! grep -Fq "$config_line" "$config_file"; then
+        sed -i "/^\/\* That's all, stop editing! /i $(escape_sed_replacement "$config_line")" "$config_file"
+    fi
+}
+
 cat > /var/www/html/wp-content/db.php <<'PHP'
 <?php
 require_once __DIR__ . '/plugins/wp-pgsql-database/wp-pgsql-database.php';
@@ -149,6 +162,20 @@ if [ -z "${WORDPRESS_DB_PASSWORD:-}" ]; then
         export WORDPRESS_DB_PASSWORD
     fi
 fi
+
+if [ ! -f /var/www/html/wp-config.php ]; then
+    wp config create \
+        --allow-root \
+        --path=/var/www/html \
+        --dbname="${WORDPRESS_DB_NAME:-wordpress}" \
+        --dbuser="${WORDPRESS_DB_USER:-wordpress}" \
+        --dbpass="${WORDPRESS_DB_PASSWORD:-}" \
+        --dbhost="${WORDPRESS_DB_HOST:-localhost}" \
+        --skip-check
+fi
+
+insert_wp_config_line /var/www/html/wp-config.php "define( 'DB_ENGINE', 'pgsql' );"
+insert_wp_config_line /var/www/html/wp-config.php "require_once ABSPATH . 'wp-content/wp-config-secrets.php';"
 
 core_installed=0
 if wp core is-installed --allow-root --path=/var/www/html >/dev/null 2>&1; then
