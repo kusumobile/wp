@@ -61,13 +61,28 @@ insert_wp_config_line() {
 cat > /var/www/html/wp-content/db.php <<'PHP'
 <?php
 if ( defined( 'DB_ENGINE' ) && 'pgsql' === DB_ENGINE ) {
+    $db_host = DB_HOST;
+    $sslmode = getenv( 'PGSSLMODE' );
+    if ( false === $sslmode || '' === $sslmode ) {
+        $sslmode = 'require';
+    }
+
+    if ( false === strpos( $db_host, ';sslmode=' ) ) {
+        if ( false !== strpos( $db_host, ':' ) ) {
+            list( $host_only, $port_only ) = explode( ':', $db_host, 2 );
+            $db_host = $host_only . ';sslmode=' . $sslmode . ':' . $port_only;
+        } else {
+            $db_host = $db_host . ';sslmode=' . $sslmode;
+        }
+    }
+
     require_once __DIR__ . '/plugins/wp-pgsql-database/includes/driver/class-wp-pgsql-driver-interface.php';
     require_once __DIR__ . '/plugins/wp-pgsql-database/includes/driver/class-wp-pgsql-driver.php';
     require_once __DIR__ . '/plugins/wp-pgsql-database/includes/translator/class-wp-pgsql-lexer.php';
     require_once __DIR__ . '/plugins/wp-pgsql-database/includes/translator/class-wp-pgsql-token.php';
     require_once __DIR__ . '/plugins/wp-pgsql-database/includes/translator/class-wp-pgsql-translator.php';
     require_once __DIR__ . '/plugins/wp-pgsql-database/includes/database/class-wp-pgsql-db.php';
-    $wpdb = new \WP_PgSQL_Database\Database\WP_PgSQL_Db( DB_USER, DB_PASSWORD, DB_NAME, DB_HOST );
+    $wpdb = new \WP_PgSQL_Database\Database\WP_PgSQL_Db( DB_USER, DB_PASSWORD, DB_NAME, $db_host );
     $GLOBALS['wpdb'] = $wpdb;
 }
 PHP
