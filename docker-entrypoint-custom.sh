@@ -150,6 +150,19 @@ value_or_file() {
     printf '%s' ""
 }
 
+escape_sed_replacement() {
+    printf '%s' "$1" | sed -e 's/[\/&\\]/\\&/g'
+}
+
+insert_wp_config_line() {
+    config_file="$1"
+    config_line="$2"
+
+    if ! grep -Fq "$config_line" "$config_file"; then
+        sed -i "/^\/\* That's all, stop editing! /i $(escape_sed_replacement "$config_line")" "$config_file"
+    fi
+}
+
 cd /var/www/html
 
 if [ -n "${WORDPRESS_DB_PASSWORD_FILE:-}" ] && [ -f "${WORDPRESS_DB_PASSWORD_FILE}" ]; then
