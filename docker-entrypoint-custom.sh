@@ -22,6 +22,25 @@ secret_value() {
     printf '%s' "$secret_value_raw"
 }
 
+value_or_file() {
+    secret_name="$1"
+    secret_file_name="${secret_name}_FILE"
+
+    eval secret_value_raw="\${${secret_name}:-}"
+    if [ -n "$secret_value_raw" ]; then
+        printf '%s' "$secret_value_raw"
+        return 0
+    fi
+
+    eval secret_file_path="\${${secret_file_name}:-}"
+    if [ -n "$secret_file_path" ] && [ -f "$secret_file_path" ]; then
+        cat "$secret_file_path"
+        return 0
+    fi
+
+    printf '%s' ""
+}
+
 cat > /var/www/html/wp-content/db.php <<'PHP'
 <?php
 require_once __DIR__ . '/plugins/wp-pgsql-database/wp-pgsql-database.php';
@@ -101,7 +120,18 @@ if [ -n "${WORDPRESS_DB_PASSWORD_FILE:-}" ] && [ -f "${WORDPRESS_DB_PASSWORD_FIL
     export WORDPRESS_DB_PASSWORD="$(cat "${WORDPRESS_DB_PASSWORD_FILE}")"
 fi
 
+if [ -z "${WORDPRESS_DB_PASSWORD:-}" ]; then
+    WORDPRESS_DB_PASSWORD="$(value_or_file WORDPRESS_DB_PASSWORD)"
+    if [ -n "$WORDPRESS_DB_PASSWORD" ]; then
+        export WORDPRESS_DB_PASSWORD
+    fi
+fi
+
 admin_password="$(secret_value WORDPRESS_ADMIN_PASSWORD)"
+
+if [ -z "$admin_password" ]; then
+    admin_password="$(value_or_file WORDPRESS_ADMIN_PASSWORD)"
+fi
 
 if [ -z "$admin_password" ]; then
     echo "WORDPRESS_ADMIN_PASSWORD or WORDPRESS_ADMIN_PASSWORD_FILE must be set" >&2
