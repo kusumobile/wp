@@ -155,6 +155,10 @@ wp plugin is-active wp-pgsql-database --allow-root --path=/var/www/html >/dev/nu
 wp plugin is-active s3-uploads --allow-root --path=/var/www/html >/dev/null 2>&1 || \
     wp plugin activate s3-uploads --allow-root --path=/var/www/html
 
+if [ "$#" -eq 0 ]; then
+    set -- apache2-foreground
+fi
+
 exec "$@"
 SH
 
