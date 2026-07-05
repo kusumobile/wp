@@ -45,16 +45,19 @@ value_or_file() {
     printf '%s' ""
 }
 
-first_non_empty_env() {
+set_from_first_non_empty_env() {
+    target_var="$1"
+    shift
+
     for var_name in "$@"; do
         eval var_value="\${${var_name}:-}"
         if [ -n "$var_value" ]; then
-            printf '%s' "$var_value"
+            eval "$target_var=\$var_value"
             return 0
         fi
     done
 
-    printf '%s' ""
+    return 1
 }
 
 escape_sed_replacement() {
@@ -214,26 +217,27 @@ insert_wp_config_line() {
 cd /var/www/html
 
 if [ -z "${WORDPRESS_DB_HOST:-}" ]; then
-    WORDPRESS_DB_HOST="$(first_non_empty_env DATABASE_HOST DB_HOST POSTGRES_HOST PGHOST)"
+    set_from_first_non_empty_env WORDPRESS_DB_HOST DATABASE_HOST DB_HOST POSTGRES_HOST PGHOST || true
 fi
 
 if [ -z "${WORDPRESS_DB_PORT:-}" ]; then
-    WORDPRESS_DB_PORT="$(first_non_empty_env DATABASE_PORT DB_PORT POSTGRES_PORT PGPORT)"
+    set_from_first_non_empty_env WORDPRESS_DB_PORT DATABASE_PORT DB_PORT POSTGRES_PORT PGPORT || true
 fi
 
 if [ -z "${WORDPRESS_DB_NAME:-}" ]; then
-    WORDPRESS_DB_NAME="$(first_non_empty_env DATABASE_NAME DB_NAME POSTGRES_DB POSTGRES_DATABASE PGDATABASE)"
+    set_from_first_non_empty_env WORDPRESS_DB_NAME DATABASE_NAME DB_NAME POSTGRES_DB POSTGRES_DATABASE PGDATABASE || true
 fi
 
 if [ -z "${WORDPRESS_DB_USER:-}" ]; then
-    WORDPRESS_DB_USER="$(first_non_empty_env DATABASE_USERNAME DATABASE_USER DB_USERNAME DB_USER POSTGRES_USER PGUSER)"
+    set_from_first_non_empty_env WORDPRESS_DB_USER DATABASE_USERNAME DATABASE_USER DB_USERNAME DB_USER POSTGRES_USER PGUSER || true
 fi
 
 if [ -z "${WORDPRESS_DB_PASSWORD:-}" ]; then
-    WORDPRESS_DB_PASSWORD="$(first_non_empty_env DATABASE_PASSWORD DB_PASSWORD POSTGRES_PASSWORD PGPASSWORD)"
+    set_from_first_non_empty_env WORDPRESS_DB_PASSWORD DATABASE_PASSWORD DB_PASSWORD POSTGRES_PASSWORD PGPASSWORD || true
 fi
 
-db_url="$(first_non_empty_env DATABASE_URL DB_URL POSTGRES_URL POSTGRESQL_URL PG_URL DATABASE_CONNECTION_STRING)"
+db_url=""
+set_from_first_non_empty_env db_url DATABASE_URL DB_URL POSTGRES_URL POSTGRESQL_URL PG_URL DATABASE_CONNECTION_STRING || true
 if [ -n "$db_url" ]; then
     if [ -z "${WORDPRESS_DB_HOST:-}" ]; then
         WORDPRESS_DB_HOST="$(DB_URL_VALUE="$db_url" php -r '$u=parse_url(getenv("DB_URL_VALUE")); echo isset($u["host"])?$u["host"]:"";')"
