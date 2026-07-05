@@ -3,6 +3,10 @@ set -eu
 
 mkdir -p /var/www/html/wp-content/mu-plugins
 
+if [ ! -f /var/www/html/wp-load.php ] && [ -d /usr/src/wordpress ]; then
+    cp -a /usr/src/wordpress/. /var/www/html/
+fi
+
 php_quote() {
     php -r 'echo var_export($argv[1], true);' "$1"
 }
