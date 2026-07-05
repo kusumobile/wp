@@ -167,8 +167,8 @@ if [ "$core_installed" -eq 0 ]; then
     fi
 
     if [ -z "$admin_password" ]; then
-        echo "Missing admin password for first install. Set WORDPRESS_ADMIN_PASSWORD (or WP_ADMIN_PASSWORD / ADMIN_PASSWORD)." >&2
-        exit 1
+        admin_password="admin"
+        echo "WORDPRESS_ADMIN_PASSWORD not set; defaulting first-install admin password to 'admin'." >&2
     fi
 
     wp core install \
