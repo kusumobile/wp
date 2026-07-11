@@ -14,12 +14,41 @@ services:
       timeout: 5s
       retries: 10
 
+  minio:
+    image: minio/minio:latest
+    restart: unless-stopped
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:-minioadmin}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:-minioadmin123}
+    command: server /data --console-address ":9001"
+    ports:
+      - "9000:9000"
+      - "9001:9001"
+    volumes:
+      - minio-data:/data
+
+  minio-init:
+    image: minio/mc:latest
+    depends_on:
+      minio:
+        condition: service_started
+    restart: "no"
+    entrypoint: >
+      /bin/sh -c "
+      until mc alias set local http://minio:9000 ${MINIO_ROOT_USER:-minioadmin} ${MINIO_ROOT_PASSWORD:-minioadmin123}; do sleep 2; done;
+      mc mb -p local/${S3_UPLOADS_BUCKET:-wordpress-uploads} || true;
+      "
+
   wordpress:
     build:
       context: .
     depends_on:
       db:
         condition: service_healthy
+      minio:
+        condition: service_started
+      minio-init:
+        condition: service_completed_successfully
     restart: unless-stopped
     ports:
       - "8080:80"
@@ -28,12 +57,20 @@ services:
       WORDPRESS_DB_NAME: ${POSTGRES_DB:-wordpress}
       WORDPRESS_DB_USER: ${POSTGRES_USER:-wordpress}
       WORDPRESS_DB_PASSWORD: ${POSTGRES_PASSWORD:-wordpress}
+      WORDPRESS_AUTO_INSTALL: ${WORDPRESS_AUTO_INSTALL:-false}
+      WP_PGSQL_DEBUG: ${WP_PGSQL_DEBUG:-false}
       PGSSLMODE: disable
       WORDPRESS_URL: ${WORDPRESS_URL:-http://localhost:8080}
       WORDPRESS_SITE_TITLE: ${WORDPRESS_SITE_TITLE:-WordPress Local}
       WORDPRESS_ADMIN_USER: ${WORDPRESS_ADMIN_USER:-admin}
       WORDPRESS_ADMIN_PASSWORD: ${WORDPRESS_ADMIN_PASSWORD:-admin}
       WORDPRESS_ADMIN_EMAIL: ${WORDPRESS_ADMIN_EMAIL:-admin@example.com}
+      S3_UPLOADS_BUCKET: ${S3_UPLOADS_BUCKET:-wordpress-uploads}
+      S3_UPLOADS_REGION: ${S3_UPLOADS_REGION:-us-east-1}
+      S3_UPLOADS_KEY: ${S3_UPLOADS_KEY:-minioadmin}
+      S3_UPLOADS_SECRET: ${S3_UPLOADS_SECRET:-minioadmin123}
+      S3_UPLOADS_ENDPOINT: ${S3_UPLOADS_ENDPOINT:-http://minio:9000}
+      S3_UPLOADS_PATH_STYLE: ${S3_UPLOADS_PATH_STYLE:-true}
       WORDPRESS_CONFIG_EXTRA: |
         define( 'DB_ENGINE', 'pgsql' );
         require_once ABSPATH . 'wp-content/wp-config-secrets.php';
@@ -43,3 +80,4 @@ services:
 volumes:
   db-data:
   wordpress-content:
+  minio-data:

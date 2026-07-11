@@ -2,9 +2,23 @@
 set -eu
 
 mkdir -p /var/www/html/wp-content/mu-plugins
+mkdir -p /var/www/html/wp-content/plugins
 
 if [ ! -f /var/www/html/wp-load.php ] && [ -d /usr/src/wordpress ]; then
     cp -a /usr/src/wordpress/. /var/www/html/
+fi
+
+# Keep custom plugins available when wp-content is a named volume.
+for plugin_dir in wp-pgsql-database s3-uploads; do
+    if [ ! -d "/var/www/html/wp-content/plugins/${plugin_dir}" ] && [ -d "/usr/src/wordpress/wp-content/plugins/${plugin_dir}" ]; then
+        cp -a "/usr/src/wordpress/wp-content/plugins/${plugin_dir}" "/var/www/html/wp-content/plugins/${plugin_dir}"
+    fi
+done
+
+# Ensure S3 Uploads dependencies exist in persisted volumes from earlier runs.
+if [ -d /usr/src/wordpress/wp-content/plugins/s3-uploads/vendor ] && [ ! -d /var/www/html/wp-content/plugins/s3-uploads/vendor ]; then
+    mkdir -p /var/www/html/wp-content/plugins/s3-uploads
+    cp -a /usr/src/wordpress/wp-content/plugins/s3-uploads/vendor /var/www/html/wp-content/plugins/s3-uploads/vendor
 fi
 
 php_quote() {
@@ -81,33 +95,258 @@ if ( ! defined( 'DB_HOST' ) || ! defined( 'DB_USER' ) || ! defined( 'DB_PASSWORD
     return;
 }
 
-$db_host = DB_HOST;
-$sslmode = getenv( 'PGSSLMODE' );
-if ( false === $sslmode || '' === $sslmode ) {
-    $sslmode = 'require';
-}
-
-if ( false === strpos( $db_host, ';sslmode=' ) ) {
-    if ( false !== strpos( $db_host, ':' ) ) {
-        list( $host_only, $port_only ) = explode( ':', $db_host, 2 );
-        $db_host = $host_only . ';sslmode=' . $sslmode . ':' . $port_only;
-    } else {
-        $db_host = $db_host . ';sslmode=' . $sslmode;
-    }
-}
-
 require_once __DIR__ . '/plugins/wp-pgsql-database/includes/driver/class-wp-pgsql-driver-interface.php';
 require_once __DIR__ . '/plugins/wp-pgsql-database/includes/driver/class-wp-pgsql-driver.php';
 require_once __DIR__ . '/plugins/wp-pgsql-database/includes/translator/class-wp-pgsql-lexer.php';
 require_once __DIR__ . '/plugins/wp-pgsql-database/includes/translator/class-wp-pgsql-token.php';
 require_once __DIR__ . '/plugins/wp-pgsql-database/includes/translator/class-wp-pgsql-translator.php';
 require_once __DIR__ . '/plugins/wp-pgsql-database/includes/database/class-wp-pgsql-db.php';
-$wpdb = new \WP_PgSQL_Database\Database\WP_PgSQL_Db( DB_USER, DB_PASSWORD, DB_NAME, $db_host );
+require_once __DIR__ . '/plugins/wp-pgsql-database/includes/schema/class-wp-pgsql-schema-mapper.php';
+
+/**
+ * Extend the base translator to fix ON CONFLICT syntax for PostgreSQL.
+ */
+class WP_PgSQL_Translator_Fixed extends \WP_PgSQL_Database\Translator\WP_PgSQL_Translator {
+    public function translate( string $sql ): string {
+        $translated = parent::translate( $sql );
+
+        // Fix VALUES(col) → EXCLUDED."col" in ON CONFLICT DO UPDATE clauses.
+        if ( stripos( $translated, 'ON CONFLICT DO UPDATE SET' ) !== false ) {
+            $translated = preg_replace_callback(
+                '/\bON\s+CONFLICT\s+DO\s+UPDATE\s+SET\s+(.+)/is',
+                static function ( $m ) use ( $sql ) {
+                    $assignments = preg_replace(
+                        '/\bVALUES\s*\(\s*["`]?([a-zA-Z0-9_]+)["`]?\s*\)/i',
+                        'EXCLUDED."$1"',
+                        $m[1]
+                    );
+
+                    $target = '';
+                    if ( preg_match( '/\(([^)]*)\)\s*VALUES/is', $sql, $cm ) ) {
+                        $cols = array_filter( array_map(
+                            static function ( $c ) { return trim( $c, " \t\n\r\0\x0B`\"" ); },
+                            explode( ',', $cm[1] )
+                        ) );
+                        $cols = array_values( $cols );
+                        if ( in_array( 'option_name', $cols, true ) ) {
+                            $target = ' ("option_name")';
+                        } elseif ( in_array( 'object_id', $cols, true ) && in_array( 'term_taxonomy_id', $cols, true ) ) {
+                            $target = ' ("object_id","term_taxonomy_id")';
+                        } elseif ( ! empty( $cols ) ) {
+                            $target = ' ("' . $cols[0] . '")';
+                        }
+                    }
+
+                    return 'ON CONFLICT' . $target . ' DO UPDATE SET ' . $assignments;
+                },
+                $translated
+            );
+        }
+
+        return $translated;
+    }
+}
+
+/**
+ * Extend wpdb with PostgreSQL-compatible methods.
+ */
+class WP_PgSQL_Db_Compat extends \WP_PgSQL_Database\Database\WP_PgSQL_Db {
+    public function __construct( $u, $p, $n, $h ) {
+        parent::__construct( $u, $p, $n, $h );
+        // Swap in our fixed translator via reflection so no base-class changes needed.
+        $ref   = new ReflectionClass( \WP_PgSQL_Database\Database\WP_PgSQL_Db::class );
+        $prop  = $ref->getProperty( 'translator' );
+        $prop->setAccessible( true );
+        $prop->setValue( $this, new WP_PgSQL_Translator_Fixed( new \WP_PgSQL_Database\Translator\WP_PgSQL_Lexer() ) );
+
+        // Mark as connected for wpdb internals that expect this state.
+        $this->has_connected = true;
+    }
+
+    /**
+     * Skip mysqli connection logic; PostgreSQL driver is already connected.
+     */
+    public function db_connect( $allow_bail = true ): bool {
+        return (bool) $this->ready;
+    }
+
+    /**
+     * Skip mysqli health checks; rely on PostgreSQL driver readiness.
+     */
+    public function check_connection( $allow_bail = true ): bool {
+        return (bool) $this->ready;
+    }
+
+    /**
+     * WordPress expects user objects with uppercase ID; PostgreSQL returns lowercase id.
+     */
+    private function normalize_result_ids(): void {
+        if ( empty( $this->last_result ) || ! is_array( $this->last_result ) ) {
+            return;
+        }
+
+        foreach ( $this->last_result as $row ) {
+            if ( ! is_object( $row ) ) {
+                continue;
+            }
+
+            $vars = get_object_vars( $row );
+            if ( array_key_exists( 'id', $vars ) && ! array_key_exists( 'ID', $vars ) ) {
+                $row->ID = $vars['id'];
+            }
+        }
+    }
+
+    /**
+     * Normalize mapped DDL that still uses MySQL-specific syntax.
+     */
+    private function normalize_ddl_sql( string $query ): string {
+        $query = preg_replace( '/\bBIGINT\s*\(\s*\d+\s*\)/i', 'BIGINT', $query );
+        $query = preg_replace( '/\bINTEGER\s*\(\s*\d+\s*\)/i', 'INTEGER', $query );
+        $query = preg_replace( '/\bUNIQUE\s+KEY\s+\w+\s*\(([^)]+)\)/i', 'UNIQUE ($1)', $query );
+        $query = str_ireplace( "'0000-00-00 00:00:00'", "'1970-01-01 00:00:00'", $query );
+        $query = preg_replace( '/\)\)\s*\n\s*\)/', ")\n)", $query );
+
+        return $query;
+    }
+
+    /**
+     * Avoid mysqli-specific fatal paths while running on PostgreSQL.
+     */
+    public function print_error( $str = '' ) {
+        if ( empty( $str ) && ! empty( $this->last_error ) ) {
+            $str = $this->last_error;
+        }
+
+        if ( ! empty( $str ) ) {
+            error_log( 'WordPress database error: ' . $str );
+        }
+
+        return false;
+    }
+
+    /**
+     * PostgreSQL folds unquoted identifiers to lowercase.
+     * Normalize quoted identifiers from translated MySQL SQL (e.g. "ID") to lowercase.
+     */
+    private function normalize_identifier_case( string $query ): string {
+        return preg_replace_callback(
+            '/"([A-Za-z_][A-Za-z0-9_]*)"/',
+            static function ( array $m ): string {
+                return '"' . strtolower( $m[1] ) . '"';
+            },
+            $query
+        );
+    }
+
+    /**
+     * Enable verbose SQL tracing only when explicitly requested.
+     */
+    private function is_debug_enabled(): bool {
+        static $enabled = null;
+
+        if ( $enabled !== null ) {
+            return $enabled;
+        }
+
+        $raw = getenv( 'WP_PGSQL_DEBUG' );
+        if ( $raw === false || $raw === '' ) {
+            $enabled = false;
+            return $enabled;
+        }
+
+        $enabled = in_array( strtolower( (string) $raw ), array( '1', 'true', 'yes', 'on' ), true );
+        return $enabled;
+    }
+
+    /**
+     * Intercept queries: run DDL through schema mapper and fix MySQL multi-table DELETE.
+     */
+    public function query( $query ) {
+        $is_ddl = false;
+        $original_query = $query;
+
+        $query = $this->normalize_identifier_case( $query );
+
+        // Translate DESCRIBE table probes to PostgreSQL metadata queries.
+        if ( preg_match( '/^\s*DESCRIBE\s+[`"]?([a-zA-Z0-9_]+)[`"]?\s*;?\s*$/i', $query, $m ) ) {
+            $table = $m[1];
+            $query = "SELECT column_name AS Field, data_type AS Type, is_nullable AS Null, column_default AS \"Default\"\n"
+                . "FROM information_schema.columns\n"
+                . "WHERE table_schema = 'public'\n"
+                . "  AND table_name = '" . $table . "'\n"
+                . "ORDER BY ordinal_position";
+        }
+
+        // Route CREATE TABLE / ALTER TABLE through schema mapper.
+        if ( preg_match( '/^\s*(CREATE|ALTER)\s+TABLE\b/i', $query ) ) {
+            $is_ddl = true;
+            $mapper = new \WP_PgSQL_Database\Schema\WP_PgSQL_Schema_Mapper();
+            $query  = $mapper->rewrite( $query );
+            $query  = $this->normalize_ddl_sql( $query );
+        }
+        // Strip MySQL multi-table DELETE syntax (not supported in PostgreSQL).
+        if ( preg_match( '/^\s*DELETE\s+\w+\s*,/i', $query ) ) {
+            return false;
+        }
+
+        $result = parent::query( $query );
+
+        // During fresh install checks, WordPress probes wp_options before tables exist.
+        // Treat missing wp_options as "not installed yet" instead of hard DB failure.
+        if (
+            $result === false
+            && preg_match( '/\bFROM\s+wp_options\b/i', $query )
+            && ! empty( $this->last_error )
+            && stripos( $this->last_error, 'relation "wp_options" does not exist' ) !== false
+        ) {
+            $this->last_error = '';
+        }
+
+        if ( $result !== false ) {
+            $this->normalize_result_ids();
+        }
+
+        if ( $this->is_debug_enabled() && ( $is_ddl || $result === false ) ) {
+            $line = "\n[" . gmdate( 'c' ) . "] result=" . ( $result === false ? 'false' : 'ok' ) . "\n";
+            if ( $is_ddl ) {
+                $line .= "ORIGINAL:\n" . $original_query . "\n\nREWRITTEN:\n" . $query . "\n";
+            } else {
+                $line .= "QUERY:\n" . $query . "\n";
+            }
+            if ( ! empty( $this->last_error ) ) {
+                $line .= "ERROR:\n" . $this->last_error . "\n";
+            }
+            @file_put_contents( '/tmp/wp-pgsql-query.log', $line . "\n", FILE_APPEND );
+        }
+
+        return $result;
+    }
+
+    public function db_version(): string {
+        $raw = parent::db_version();
+        if ( preg_match( '/(\d+(?:\.\d+){1,2})/', $raw, $m ) ) {
+            return $m[1];
+        }
+
+        // Return a high-enough numeric fallback for core version comparisons.
+        return '8.0.0';
+    }
+
+    public function db_server_info(): string {
+        return 'PostgreSQL ' . $this->db_version();
+    }
+}
+
+$wpdb = new WP_PgSQL_Db_Compat( DB_USER, DB_PASSWORD, DB_NAME, DB_HOST );
 $GLOBALS['wpdb'] = $wpdb;
 PHP
 
 cat > /var/www/html/wp-content/mu-plugins/s3-uploads.php <<'PHP'
 <?php
+if ( file_exists( __DIR__ . '/../plugins/s3-uploads/vendor/autoload.php' ) ) {
+    require_once __DIR__ . '/../plugins/s3-uploads/vendor/autoload.php';
+}
 require_once __DIR__ . '/../plugins/s3-uploads/s3-uploads.php';
 PHP
 
@@ -154,6 +393,16 @@ append_php_define "S3_UPLOADS_KEY" "$(secret_value S3_UPLOADS_KEY)"
 append_php_define "S3_UPLOADS_SECRET" "$(secret_value S3_UPLOADS_SECRET)"
 append_php_define "S3_UPLOADS_BUCKET_URL" "$(secret_value S3_UPLOADS_BUCKET_URL)" 
 append_php_define "S3_UPLOADS_OBJECT_ACL" "$(secret_value S3_UPLOADS_OBJECT_ACL)" 
+
+cat >> "$wp_config_secrets" <<'PHP'
+if ( ! defined( 'WP_INSTALLING' ) ) {
+    $is_install_request = isset( $_SERVER['REQUEST_URI'] ) && strpos( $_SERVER['REQUEST_URI'], '/wp-admin/install.php' ) !== false;
+
+    if ( $is_install_request ) {
+        define( 'WP_INSTALLING', true );
+    }
+}
+PHP
 
 cat > /usr/local/bin/wordpress-bootstrap.sh <<'SH'
 #!/bin/sh
@@ -326,7 +575,27 @@ if [ "$db_ready" -eq 1 ] && wp core is-installed --allow-root --path=/var/www/ht
     core_installed=1
 fi
 
-if [ "$db_ready" -eq 1 ] && [ "$core_installed" -eq 0 ]; then
+auto_install_core=0
+case "${WORDPRESS_AUTO_INSTALL:-false}" in
+    1|true|TRUE|yes|YES|on|ON)
+        auto_install_core=1
+        ;;
+esac
+
+bootstrap_marker="/var/www/html/wp-content/.wp-bootstrap-installed"
+if [ "$core_installed" -eq 1 ]; then
+    touch "$bootstrap_marker"
+fi
+
+if [ "$db_ready" -eq 1 ] && [ "$core_installed" -eq 0 ] && [ "$auto_install_core" -eq 1 ] && [ -f "$bootstrap_marker" ]; then
+    echo "Bootstrap marker exists; skipping wp core install retry." >&2
+fi
+
+if [ "$db_ready" -eq 1 ] && [ "$core_installed" -eq 0 ] && [ "$auto_install_core" -eq 0 ]; then
+    echo "WORDPRESS_AUTO_INSTALL is disabled; skipping wp core install." >&2
+fi
+
+if [ "$db_ready" -eq 1 ] && [ "$core_installed" -eq 0 ] && [ "$auto_install_core" -eq 1 ] && [ ! -f "$bootstrap_marker" ]; then
     admin_password="$(secret_value WORDPRESS_ADMIN_PASSWORD)"
 
     if [ -z "$admin_password" ]; then
@@ -346,7 +615,7 @@ if [ "$db_ready" -eq 1 ] && [ "$core_installed" -eq 0 ]; then
         echo "WORDPRESS_ADMIN_PASSWORD not set; defaulting first-install admin password to 'admin'." >&2
     fi
 
-    if ! wp core install \
+    if wp core install \
         --allow-root \
         --path=/var/www/html \
         --url="${WORDPRESS_URL:-http://localhost:8080}" \
@@ -354,11 +623,14 @@ if [ "$db_ready" -eq 1 ] && [ "$core_installed" -eq 0 ]; then
         --admin_user="${WORDPRESS_ADMIN_USER:-admin}" \
         --admin_password="$admin_password" \
         --admin_email="${WORDPRESS_ADMIN_EMAIL:-admin@example.com}"; then
+        touch "$bootstrap_marker"
+        core_installed=1
+    else
         echo "wp core install failed; continuing to start Apache." >&2
     fi
 fi
 
-if [ "$db_ready" -eq 1 ]; then
+if [ "$db_ready" -eq 1 ] && [ "$core_installed" -eq 1 ]; then
     wp plugin is-active wp-pgsql-database --allow-root --path=/var/www/html >/dev/null 2>&1 || \
         wp plugin activate wp-pgsql-database --allow-root --path=/var/www/html || true
 
@@ -388,6 +660,8 @@ fi
 if ! grep -q '^ServerName ' /etc/apache2/apache2.conf; then
     printf '\nServerName %s\n' "${SERVER_NAME:-localhost}" >> /etc/apache2/apache2.conf
 fi
+
+chown -R www-data:www-data /var/www/html/wp-content
 
 exec "$@"
 SH
